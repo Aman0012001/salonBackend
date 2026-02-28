@@ -43,7 +43,7 @@ class Database
                     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                     PDO::ATTR_EMULATE_PREPARES => false,
-                    PDO::ATTR_PERSISTENT => true, // Re-enable persistence to avoid 23s overhead per request
+                    PDO::ATTR_PERSISTENT => false, // Temporarily disabled for CLI debugging
                 ]);
 
                 error_log("[Database] Connection established successfully!");

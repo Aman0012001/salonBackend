@@ -45,11 +45,25 @@ if ($method === 'POST' && count($uriParts) === 1) {
     $userId = $data['user_id'] ?? null;
     $salonId = $data['salon_id'] ?? null;
     $productName = $data['product_name'] ?? null;
-    $price = $data['price'] ?? null;
+    $totalAmount = $data['total_amount'] ?? $data['price'] ?? null;
+    $costPrice = $data['cost_price'] ?? null;
     $purchaseDate = $data['purchase_date'] ?? date('Y-m-d');
 
-    if (!$userId || !$salonId || !$productName || $price === null) {
-        sendResponse(['error' => 'All fields (user_id, salon_id, product_name, price) are required'], 400);
+    if (!$userId || !$salonId || !$productName || $totalAmount === null) {
+        sendResponse(['error' => 'Required fields (user_id, salon_id, product_name, total_amount) are missing'], 400);
+    }
+
+    // Auto-fetch cost_price from inventory if not provided
+    if ($costPrice === null) {
+        $stmt = $db->prepare("SELECT cost_price FROM salon_inventory WHERE salon_id = ? AND name = ? LIMIT 1");
+        $stmt->execute([$salonId, $productName]);
+        $invItem = $stmt->fetch();
+        if ($invItem) {
+            $costPrice = $invItem['cost_price'];
+        }
+        else {
+            $costPrice = 0.00;
+        }
     }
 
     // Check permission (only salon staff can add purchases)
@@ -60,8 +74,8 @@ if ($method === 'POST' && count($uriParts) === 1) {
     }
 
     $id = Auth::generateUuid();
-    $stmt = $db->prepare("INSERT INTO customer_product_purchases (id, user_id, salon_id, product_name, price, purchase_date) VALUES (?, ?, ?, ?, ?, ?)");
-    $stmt->execute([$id, $userId, $salonId, $productName, $price, $purchaseDate]);
+    $stmt = $db->prepare("INSERT INTO customer_product_purchases (id, user_id, salon_id, product_name, total_amount, cost_price, purchase_date) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    $stmt->execute([$id, $userId, $salonId, $productName, $totalAmount, $costPrice, $purchaseDate]);
 
     // Points & Coins Integration
     try {
@@ -72,11 +86,11 @@ if ($method === 'POST' && count($uriParts) === 1) {
         $loyaltyService = new LoyaltyService($db, new NotificationService($db));
         $coinService = new CoinService($db);
 
-        // Earn loyalty points
-        $loyaltyService->earnPoints($salonId, $userId, $price, $id, "Points earned from purchase: $productName");
+        // Earn loyalty points (use selling price)
+        $loyaltyService->earnPoints($salonId, $userId, $totalAmount, $id, "Points earned from purchase: $productName");
 
-        // Earn platform coins
-        $coinService->earnCoins($userId, $price, "Coins earned from purchase: $productName at " . ($data['salon_name'] ?? 'Salon'), $id);
+        // Earn platform coins (use selling price)
+        $coinService->earnCoins($userId, $totalAmount, "Coins earned from purchase: $productName at " . ($data['salon_name'] ?? 'Salon'), $id);
     }
     catch (Exception $e) {
         error_log("Failed to process points/coins for product purchase: " . $e->getMessage());

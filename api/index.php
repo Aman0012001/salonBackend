@@ -79,8 +79,7 @@ function sendResponse($data, $statusCode = 200)
             'error' => 'JSON Encode Error',
             'message' => json_last_error_msg()
         ]);
-    }
-    else {
+    } else {
         echo $json;
     }
     exit();
@@ -149,9 +148,8 @@ try {
                 if ($stmt->fetchColumn()) {
                     $effectiveRole = 'admin';
                 }
-            }
-            catch (Exception $e) {
-            // Ignore DB errors here, fall back to token role
+            } catch (Exception $e) {
+                // Ignore DB errors here, fall back to token role
             }
 
             if ($effectiveRole === 'salon_owner')
@@ -163,7 +161,7 @@ try {
 
             // If specific roles are required
             if (!empty($allowedRoles)) {
-                $isAllowed = in_array($effectiveRole, (array)$allowedRoles);
+                $isAllowed = in_array($effectiveRole, (array) $allowedRoles);
 
                 // Also allow super_admin to everything
                 if ($effectiveRole === 'super_admin')
@@ -379,6 +377,9 @@ try {
         case 'coupons':
             require_once __DIR__ . '/routes/coupons.php';
             break;
+        case 'stripe':
+            require_once __DIR__ . '/routes/stripe.php';
+            break;
         default:
             sendResponse([
                 'error' => 'Route not found',
@@ -389,7 +390,6 @@ try {
             break;
     }
 
-}
-catch (Exception $e) {
+} catch (Exception $e) {
     sendResponse(['error' => 'System error: ' . $e->getMessage()], 500);
 }

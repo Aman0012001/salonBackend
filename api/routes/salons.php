@@ -213,29 +213,46 @@ if ($method === 'GET' && count($uriParts) === 3 && $uriParts[2] === 'analytics')
 
     $analytics = [];
 
-    // 1. Revenue Trends (Monthly/Annual)
+    // 1. Revenue & Profit Trends (Monthly/Annual)
     $stmt = $db->prepare("
-        SELECT 
-            DATE_FORMAT(booking_date, '%Y-%m') as month,
-            SUM(s.price) as revenue
-        FROM bookings b
-        JOIN services s ON b.service_id = s.id
-        WHERE b.salon_id = ? AND b.status = 'completed'
-        GROUP BY DATE_FORMAT(booking_date, '%Y-%m')
+        SELECT month, SUM(revenue) as revenue, SUM(profit) as profit FROM (
+            SELECT 
+                DATE_FORMAT(booking_date, '%Y-%m') as month,
+                SUM(s.price) as revenue,
+                SUM(s.price - COALESCE(s.cost_price, 0)) as profit
+            FROM bookings b
+            JOIN services s ON b.service_id = s.id
+            WHERE b.salon_id = ? AND b.status = 'completed'
+            GROUP BY DATE_FORMAT(booking_date, '%Y-%m')
+            
+            UNION ALL
+            
+            SELECT 
+                DATE_FORMAT(purchase_date, '%Y-%m') as month,
+                SUM(total_amount) as revenue,
+                SUM(total_amount - COALESCE(cost_price, 0)) as profit
+            FROM customer_product_purchases
+            WHERE salon_id = ?
+            GROUP BY DATE_FORMAT(purchase_date, '%Y-%m')
+        ) combined_analytics
+        GROUP BY month
         ORDER BY month ASC
         LIMIT 12
     ");
-    $stmt->execute([$salonId]);
+    $stmt->execute([$salonId, $salonId]);
     $analytics['revenue_monthly'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // 2. Most Popular Treatments
+    // 2. Most Popular & Profitable Treatments
     $stmt = $db->prepare("
-        SELECT s.name, COUNT(b.id) as count, SUM(s.price) as total_earned
+        SELECT s.name, 
+               COUNT(b.id) as count, 
+               SUM(CASE WHEN b.status = 'completed' THEN s.price ELSE 0 END) as total_earned, 
+               SUM(CASE WHEN b.status = 'completed' THEN (s.price - COALESCE(s.cost_price, 0)) ELSE 0 END) as total_profit
         FROM services s
-        JOIN bookings b ON s.id = b.service_id
-        WHERE s.salon_id = ? AND b.status = 'completed'
+        LEFT JOIN bookings b ON s.id = b.service_id
+        WHERE s.salon_id = ?
         GROUP BY s.id, s.name
-        ORDER BY count DESC
+        ORDER BY count DESC, s.name ASC
         LIMIT 10
     ");
     $stmt->execute([$salonId]);

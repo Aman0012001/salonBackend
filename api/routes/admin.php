@@ -492,19 +492,32 @@ if ($method === 'GET' && $uriParts[1] === 'reports') {
     $planRevenue = $stmt->fetch()['total'];
 
     $stmt = $db->prepare("
-        SELECT IFNULL(SUM(COALESCE(s.price, 0)), 0) as total 
+        SELECT 
+            IFNULL(SUM(COALESCE(s.price, 0)), 0) as total,
+            IFNULL(SUM(COALESCE(s.price, 0) - COALESCE(s.cost_price, 0)), 0) as profit
         FROM bookings b 
         LEFT JOIN services s ON b.service_id = s.id 
         WHERE b.status = 'completed' AND b.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
     ");
     $stmt->execute([$range]);
-    $serviceRevenue = $stmt->fetch()['total'];
+    $serviceStats = $stmt->fetch();
+    $serviceRevenue = $serviceStats['total'];
+    $serviceProfit = $serviceStats['profit'];
 
-    $stmt = $db->prepare("SELECT IFNULL(SUM(total_amount), 0) as total FROM customer_product_purchases WHERE purchase_date >= DATE_SUB(NOW(), INTERVAL ? DAY)");
+    $stmt = $db->prepare("
+        SELECT 
+            IFNULL(SUM(total_amount), 0) as total,
+            IFNULL(SUM(total_amount - COALESCE(cost_price, 0)), 0) as profit
+        FROM customer_product_purchases 
+        WHERE purchase_date >= DATE_SUB(NOW(), INTERVAL ? DAY)
+    ");
     $stmt->execute([$range]);
-    $productRevenue = $stmt->fetch()['total'];
+    $productStats = $stmt->fetch();
+    $productRevenue = $productStats['total'];
+    $productProfit = $productStats['profit'];
 
     $totalRevenue = $planRevenue + $serviceRevenue + $productRevenue;
+    $totalProfit = $planRevenue + $serviceProfit + $productProfit; // Platform plans have 0 cost for now
 
     $stmt = $db->prepare("SELECT COUNT(*) as total FROM bookings WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)");
     $stmt->execute([$range]);
@@ -520,22 +533,22 @@ if ($method === 'GET' && $uriParts[1] === 'reports') {
 
     $cancellationRate = ($totalBookings > 0) ? round(($cancelledBookings / $totalBookings) * 100, 1) : 0;
 
-    // 2. Revenue History - Unified
+    // 2. Revenue & Profit History - Unified
     $stmt = $db->prepare("
-        SELECT date, SUM(value) as value FROM (
-            SELECT DATE(created_at) as date, amount as value
+        SELECT date, SUM(value) as value, SUM(profit) as profit FROM (
+            SELECT DATE(created_at) as date, amount as value, amount as profit
             FROM platform_payments
             WHERE status = 'completed' AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
             UNION ALL
-            SELECT DATE(b.created_at) as date, COALESCE(s.price, 0) as value
+            SELECT DATE(b.created_at) as date, COALESCE(s.price, 0) as value, (COALESCE(s.price, 0) - COALESCE(s.cost_price, 0)) as profit
             FROM bookings b
             LEFT JOIN services s ON b.service_id = s.id
             WHERE b.status = 'completed' AND b.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
             UNION ALL
-            SELECT DATE(purchase_date) as date, total_amount as value
+            SELECT DATE(purchase_date) as date, total_amount as value, (total_amount - COALESCE(cost_price, 0)) as profit
             FROM customer_product_purchases
             WHERE purchase_date >= DATE_SUB(NOW(), INTERVAL ? DAY)
-        ) combined_revenue
+        ) combined_stats
         GROUP BY date
         ORDER BY date ASC
     ");
@@ -558,9 +571,12 @@ if ($method === 'GET' && $uriParts[1] === 'reports') {
     sendResponse([
         'reports' => [
             'total_revenue' => $totalRevenue,
+            'total_profit' => $totalProfit,
             'plan_revenue' => $planRevenue,
             'service_revenue' => $serviceRevenue,
+            'service_profit' => $serviceProfit,
             'product_revenue' => $productRevenue,
+            'product_profit' => $productProfit,
             'total_bookings' => $totalBookings,
             'cancellation_rate' => $cancellationRate,
             'new_users' => $newUsers,

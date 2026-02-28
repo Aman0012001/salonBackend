@@ -1,0 +1,10 @@
+.env
+.env.local
+.env.*.local
+vendor/
+composer.phar
+*.log
+cache/
+uploads/
+debug_output.txt
+fix_admin_stats_schema.php

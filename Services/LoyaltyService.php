@@ -1,4 +1,6 @@
-﻿<?php
+<?php
+
+require_once __DIR__ . "/NotificationService.php";
 
 class LoyaltyService
 {
@@ -37,7 +39,7 @@ class LoyaltyService
     {
         $fields = [];
         $params = [];
-        $validFields = ['program_name', 'is_active', 'points_per_currency_unit', 'min_points_redemption', 'signup_bonus_points', 'description'];
+        $validFields = ["program_name", "is_active", "points_per_currency_unit", "min_points_redemption", "signup_bonus_points", "description"];
 
         foreach ($validFields as $field) {
             if (isset($data[$field])) {
@@ -51,7 +53,7 @@ class LoyaltyService
         }
 
         $params[] = $salonId;
-        $sql = "UPDATE loyalty_programs SET " . implode(', ', $fields) . " WHERE salon_id = ?";
+        $sql = "UPDATE loyalty_programs SET " . implode(", ", $fields) . " WHERE salon_id = ?";
         $stmt = $this->db->prepare($sql);
         return $stmt->execute($params);
     }
@@ -81,11 +83,11 @@ class LoyaltyService
         $stmt->execute([
             $id,
             $salonId,
-            $data['name'],
-            $data['description'] ?? null,
-            (int) $data['points_required'],
-            (float) ($data['discount_amount'] ?? 0),
-            isset($data['is_active']) ? (int) $data['is_active'] : 1
+            $data["name"],
+            $data["description"] ?? null,
+            (int) $data["points_required"],
+            (float) ($data["discount_amount"] ?? 0),
+            isset($data["is_active"]) ? (int) $data["is_active"] : 1
         ]);
         return $id;
     }
@@ -98,63 +100,81 @@ class LoyaltyService
 
     // --- Points Management ---
 
+    public function getCustomerStatus($salonId, $userId)
+    {
+        $stmt = $this->db->prepare("SELECT loyalty_points, membership_tier, membership_expiry FROM customer_salon_profiles WHERE salon_id = ? AND user_id = ?");
+        $stmt->execute([$salonId, $userId]);
+        $status = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$status) {
+            return ["loyalty_points" => 0, "membership_tier" => "standard", "membership_expiry" => null];
+        }
+
+        // Check if prestige has expired
+        if ($status["membership_tier"] === "prestige" && $status["membership_expiry"] && strtotime($status["membership_expiry"]) < time()) {
+            // Revert to standard
+            $stmt = $this->db->prepare("UPDATE customer_salon_profiles SET membership_tier = 'standard' WHERE salon_id = ? AND user_id = ?");
+            $stmt->execute([$salonId, $userId]);
+            $status["membership_tier"] = "standard";
+        }
+
+        return $status;
+    }
+
     public function getCustomerPoints($salonId, $userId)
     {
-        $stmt = $this->db->prepare("SELECT loyalty_points FROM customer_salon_profiles WHERE salon_id = ? AND user_id = ?");
-        $stmt->execute([$salonId, $userId]);
-        return (int)$stmt->fetchColumn() ?: 0;
+        $status = $this->getCustomerStatus($salonId, $userId);
+        return (int)($status["loyalty_points"] ?? 0);
     }
 
     public function earnPoints($salonId, $userId, $amountSpent, $bookingId)
     {
         $settings = $this->getSettings($salonId);
-        if (!$settings || !$settings['is_active']) {
+        if (!$settings || !$settings["is_active"]) {
             return false;
         }
 
-        $points = floor($amountSpent * $settings['points_per_currency_unit']);
-        if ($points <= 0)
+        $customerStatus = $this->getCustomerStatus($salonId, $userId);
+        $isPrestige = ($customerStatus["membership_tier"] === "prestige");
+        $multiplier = $isPrestige ? 2.0 : 1.0;
+        $points = floor($amountSpent * ($settings["points_per_currency_unit"] ?? 1) * $multiplier);
+        $isUpgrade = ($amountSpent >= 600 && !$isPrestige);
+
+        if ($points <= 0 && !$isUpgrade) {
             return false;
+        }
 
         $this->db->beginTransaction();
         try {
-            // Log transaction
+            // 1. Log transaction
             $txnId = Auth::generateUuid();
-            $stmt = $this->db->prepare("
-                INSERT INTO loyalty_transactions (id, salon_id, user_id, points, transaction_type, reference_id, description)
-                VALUES (?, ?, ?, ?, 'earned', ?, 'Points earned from service')
-            ");
-            $stmt->execute([$txnId, $salonId, $userId, $points, $bookingId]);
+            $desc = $isPrestige ? "Points earned (Double Rewards)" : "Points earned from service";
+            $stmt = $this->db->prepare("INSERT INTO loyalty_transactions (id, salon_id, user_id, points, transaction_type, reference_id, description) VALUES (?, ?, ?, ?, 'earned', ?, ?)");
+            $stmt->execute([$txnId, $salonId, $userId, $points, $bookingId, $desc]);
 
-            // Update balance
-            $stmt = $this->db->prepare("
-                INSERT INTO customer_salon_profiles (id, salon_id, user_id, loyalty_points)
-                VALUES (?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE loyalty_points = loyalty_points + ?
-            ");
-            
-            // Check existence for non-MySQL DBs or if ON DUPLICATE KEY is weird
-            $check = $this->db->prepare("SELECT id FROM customer_salon_profiles WHERE salon_id = ? AND user_id = ?");
-            $check->execute([$salonId, $userId]);
-            if (!$check->fetch()) {
-                $newId = Auth::generateUuid();
-                $stmt = $this->db->prepare("INSERT INTO customer_salon_profiles (id, salon_id, user_id, loyalty_points) VALUES (?, ?, ?, ?)");
-                $stmt->execute([$newId, $salonId, $userId, $points]);
-            } else {
-                $stmt = $this->db->prepare("UPDATE customer_salon_profiles SET loyalty_points = loyalty_points + ? WHERE salon_id = ? AND user_id = ?");
-                $stmt->execute([$points, $salonId, $userId]);
+            // 2. Update balance and tier
+            $params = [$points];
+            $sql = "UPDATE customer_salon_profiles SET loyalty_points = loyalty_points + ?";
+            if ($isUpgrade) {
+                $expiry = date("Y-m-d", strtotime("+1 year"));
+                $sql .= ", membership_tier = 'prestige', membership_expiry = ?";
+                $params[] = $expiry;
             }
+            $sql .= " WHERE salon_id = ? AND user_id = ?";
+            $params[] = $salonId;
+            $params[] = $userId;
+            $this->db->prepare($sql)->execute($params);
 
             $this->db->commit();
 
-            // Notify user
-            $this->notifService->notifyUser(
-                $userId,
-                "Loyalty Points Earned!",
-                "You just earned $points loyalty points from your recent visit.",
-                "success",
-                "/client/rewards"
-            );
+            // 3. Notifications
+            $msg = "You just earned $points loyalty points.";
+            if ($isPrestige) $msg = "PRESTIGE BENEFIT: You earned DOUBLE points ($points)!";
+            $this->notifService->notifyUser($userId, "Loyalty Points Earned!", $msg, "success", "/client/rewards");
+
+            if ($isUpgrade) {
+                $this->notifService->notifyUser($userId, "Prestige Membership Activated!", "You've been upgraded to Prestige for 1 year!", "premium", "/membership");
+            }
 
             return $points;
         } catch (Exception $e) {
@@ -164,104 +184,56 @@ class LoyaltyService
         }
     }
 
-    public function spendPoints($salonId, $userId, $points, $description = 'Points used for booking', $referenceId = null)
+    public function spendPoints($salonId, $userId, $points, $description = "Points used for booking", $referenceId = null)
     {
         if ($points <= 0) return true;
-
         $currentPoints = $this->getCustomerPoints($salonId, $userId);
-        if ($currentPoints < $points) {
-            return ['error' => 'Insufficient loyalty points'];
-        }
+        if ($currentPoints < $points) return ["error" => "Insufficient points"];
 
         $this->db->beginTransaction();
         try {
-            // Deduct points
-            $stmt = $this->db->prepare("UPDATE customer_salon_profiles SET loyalty_points = loyalty_points - ? WHERE salon_id = ? AND user_id = ?");
-            $stmt->execute([$points, $salonId, $userId]);
-
-            // Log transaction
+            $this->db->prepare("UPDATE customer_salon_profiles SET loyalty_points = loyalty_points - ? WHERE salon_id = ? AND user_id = ?")->execute([$points, $salonId, $userId]);
             $txnId = Auth::generateUuid();
-            $stmt = $this->db->prepare("
-                INSERT INTO loyalty_transactions (id, salon_id, user_id, points, transaction_type, reference_id, description)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ");
-            $stmt->execute([
-                $txnId,
-                $salonId,
-                $userId,
-                -$points,
-                'redeemed',
-                $referenceId,
-                $description
-            ]);
-
+            $stmt = $this->db->prepare("INSERT INTO loyalty_transactions (id, salon_id, user_id, points, transaction_type, reference_id, description) VALUES (?, ?, ?, ?, 'redeemed', ?, ?)");
+            $stmt->execute([$txnId, $salonId, $userId, -$points, $referenceId, $description]);
             $this->db->commit();
-            return ['success' => true, 'balance' => $currentPoints - $points];
+            return ["success" => true, "balance" => $currentPoints - $points];
         } catch (Exception $e) {
             $this->db->rollBack();
-            error_log("Loyalty Spend Error: " . $e->getMessage());
-            return ['error' => $e->getMessage()];
+            return ["error" => $e->getMessage()];
         }
     }
 
     public function redeemPoints($salonId, $userId, $rewardId)
     {
         $settings = $this->getSettings($salonId);
-        if (!$settings || !$settings['is_active']) {
-            return ['error' => 'Loyalty program is not active'];
-        }
+        if (!$settings || !$settings["is_active"]) return ["error" => "Inactive"];
 
         $stmt = $this->db->prepare("SELECT * FROM loyalty_rewards WHERE id = ? AND salon_id = ?");
         $stmt->execute([$rewardId, $salonId]);
         $reward = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if (!$reward || !$reward['is_active']) {
-            return ['error' => 'Reward not available'];
-        }
+        if (!$reward || !$reward["is_active"]) return ["error" => "Invalid reward"];
 
         $currentPoints = $this->getCustomerPoints($salonId, $userId);
-        if ($currentPoints < $reward['points_required']) {
-            return ['error' => 'Insufficient points'];
-        }
+        if ($currentPoints < $reward["points_required"]) return ["error" => "Insufficient points"];
 
         $this->db->beginTransaction();
         try {
-            // Deduct points
-            $stmt = $this->db->prepare("UPDATE customer_salon_profiles SET loyalty_points = loyalty_points - ? WHERE salon_id = ? AND user_id = ?");
-            $stmt->execute([$reward['points_required'], $salonId, $userId]);
-
-            // Log transaction
+            $this->db->prepare("UPDATE customer_salon_profiles SET loyalty_points = loyalty_points - ? WHERE salon_id = ? AND user_id = ?")->execute([$reward["points_required"], $salonId, $userId]);
             $txnId = Auth::generateUuid();
-            $stmt = $this->db->prepare("
-                INSERT INTO loyalty_transactions (id, salon_id, user_id, points, transaction_type, reference_id, description)
-                VALUES (?, ?, ?, ?, 'redeemed', ?, ?)
-            ");
-            $stmt->execute([
-                $txnId,
-                $salonId,
-                $userId,
-                -$reward['points_required'],
-                $rewardId,
-                "Redeemed: " . $reward['name']
-            ]);
-
+            $stmt = $this->db->prepare("INSERT INTO loyalty_transactions (id, salon_id, user_id, points, transaction_type, reference_id, description) VALUES (?, ?, ?, ?, 'redeemed', ?, ?)");
+            $stmt->execute([$txnId, $salonId, $userId, -$reward["points_required"], $rewardId, "Redeemed: " . $reward["name"]]);
             $this->db->commit();
-            return ['success' => true, 'balance' => $currentPoints - $reward['points_required']];
-
+            return ["success" => true, "balance" => $currentPoints - $reward["points_required"]];
         } catch (Exception $e) {
             $this->db->rollBack();
-            return ['error' => $e->getMessage()];
+            return ["error" => $e->getMessage()];
         }
     }
 
     public function getAllCustomerPoints($userId)
     {
-        $stmt = $this->db->prepare("
-            SELECT s.name as salon_name, p.loyalty_points, s.id as salon_id
-            FROM customer_salon_profiles p
-            JOIN salons s ON p.salon_id = s.id
-            WHERE p.user_id = ?
-        ");
+        $stmt = $this->db->prepare("SELECT s.name as salon_name, p.loyalty_points, s.id as salon_id FROM customer_salon_profiles p JOIN salons s ON p.salon_id = s.id WHERE p.user_id = ?");
         $stmt->execute([$userId]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
