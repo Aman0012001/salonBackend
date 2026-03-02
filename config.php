@@ -65,9 +65,16 @@ define('GOOGLE_REFRESH_TOKEN', '');
 define('GOOGLE_DRIVE_FOLDER_ID', ''); // Optional: ID of the folder to upload to
 
 // Cloudinary Configuration
-define('CLOUDINARY_CLOUD_NAME', getenv('CLOUDINARY_CLOUD_NAME') ?: 'de28lezdr');
-define('CLOUDINARY_API_KEY', getenv('CLOUDINARY_API_KEY') ?: '434569833245894');
-define('CLOUDINARY_API_SECRET', getenv('CLOUDINARY_API_SECRET') ?: 'TT-YIiotMjZAb2M4iwJJlkPu3Hw');
+define('CLOUDINARY_CLOUD_NAME', getenv('CLOUDINARY_CLOUD_NAME'));
+define('CLOUDINARY_API_KEY', getenv('CLOUDINARY_API_KEY'));
+define('CLOUDINARY_API_SECRET', getenv('CLOUDINARY_API_SECRET'));
+
+// ToyyibPay Configuration
+define('TOYYIBPAY_SECRET_KEY', getenv('TOYYIBPAY_SECRET_KEY') ?: 'gy5xfe0i-89wc-riyw-ggg3-nxfksodv7fw3');
+define('TOYYIBPAY_CATEGORY_CODE', getenv('TOYYIBPAY_CATEGORY_CODE') ?: 'p1cd10dd');
+define('TOYYIBPAY_BASE_URL', getenv('TOYYIBPAY_BASE_URL') ?: 'https://dev.toyyibpay.com');
+define('TOYYIBPAY_CALLBACK_URL', getenv('TOYYIBPAY_CALLBACK_URL') ?: 'https://complete-salon-saas-product-production.up.railway.app/api/toyyibpay/callback');
+define('TOYYIBPAY_RETURN_URL', getenv('TOYYIBPAY_RETURN_URL') ?: 'https://complete-salon-saas-product-production.up.railway.app/payment-success');
 
 // SMTP Configuration
 define('SMTP_HOST', getenv('SMTP_HOST') ?: 'smtp.gmail.com');

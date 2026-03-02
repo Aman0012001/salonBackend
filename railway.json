@@ -1,0 +1,11 @@
+{
+    "$schema": "https://railway.app/railway.schema.json",
+    "build": {
+        "dockerfilePath": "Dockerfile",
+        "context": "."
+    },
+    "deploy": {
+        "startCommand": "docker-entrypoint.sh",
+        "restartPolicyType": "ON_FAILURE"
+    }
+}

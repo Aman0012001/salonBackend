@@ -34,12 +34,12 @@ class Database
 
         for ($i = 0; $i < $maxRetries; $i++) {
             try {
-                $dsn = "mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=" . DB_CHARSET . ";connect_timeout=15";
+                $dsn = "mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=" . DB_CHARSET . ";connect_timeout=60";
 
                 error_log("[Database] Attempt " . ($i + 1) . " - Connecting to: " . DB_HOST . ":" . DB_PORT);
 
                 $this->connection = new PDO($dsn, DB_USER, DB_PASS, [
-                    PDO::ATTR_TIMEOUT => 30, // Increased for Railway jitter
+                    PDO::ATTR_TIMEOUT => 90, // Increased for significant Railway latency
                     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                     PDO::ATTR_EMULATE_PREPARES => false,
@@ -48,8 +48,7 @@ class Database
 
                 error_log("[Database] Connection established successfully!");
                 return $this->connection;
-            }
-            catch (PDOException $e) {
+            } catch (PDOException $e) {
                 $lastException = $e;
                 error_log("[Database] Attempt " . ($i + 1) . " failed: " . $e->getMessage());
                 if ($i < $maxRetries - 1) {
