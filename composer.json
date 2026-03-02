@@ -3,8 +3,7 @@
     "description": "Salon Booking System Backend",
     "require": {
         "php": ">=7.4",
-        "phpmailer/phpmailer": "^6.8",
-        "stripe/stripe-php": "^13.0"
+        "phpmailer/phpmailer": "^6.8"
     },
     "autoload": {
         "psr-4": {

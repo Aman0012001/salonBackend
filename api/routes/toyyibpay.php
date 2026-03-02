@@ -10,7 +10,14 @@ function sendToyyibPayRequest($url, $data)
     curl_setopt($ch, CURLOPT_POST, 1);
     curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($data));
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
     $response = curl_exec($ch);
+
+    if (curl_errno($ch)) {
+        error_log('[ToyyibPay] cURL Error: ' . curl_error($ch));
+    }
+
     curl_close($ch);
     return json_decode($response, true);
 }
@@ -50,50 +57,79 @@ if ($method === 'POST' && count($uriParts) === 2 && $uriParts[1] === 'create-bil
     }
 
     if (!$firstBooking) {
-        sendResponse(['error' => 'No valid bookings found.'], 404);
+        sendResponse(['error' => 'Booking does not exist.'], 404);
     }
 
+    // Validation: Booking is not already paid
+    if ($firstBooking['payment_status'] === 'paid' || $firstBooking['status'] === 'confirmed') {
+        sendResponse(['error' => 'Booking is already paid.'], 400);
+    }
+
+    // Validation: Customer email and phone exist
+    if (empty($firstBooking['email']) || empty($firstBooking['phone'])) {
+        sendResponse(['error' => 'Customer email and phone are required.'], 400);
+    }
+
+    // Validation: Booking amount is valid
     if ($totalAmount <= 0) {
         sendResponse(['error' => 'Invalid total booking amount.'], 400);
     }
 
     $toyyibData = [
-        'userSecretKey' => TOYYIBPAY_SECRET_KEY,
-        'categoryCode' => TOYYIBPAY_CATEGORY_CODE,
-        'billName' => 'Salon Booking - ' . $firstBooking['salon_name'],
-        'billDescription' => 'Booking for ' . (count($bookingIds) > 1 ? count($bookingIds) . ' services' : $firstBooking['service_name']) . ' at ' . $firstBooking['booking_date'] . ' ' . $firstBooking['booking_time'],
+        'userSecretKey' => getenv('TOYYIBPAY_SECRET_KEY') ?: 'gy5xfe0i-89wc-riyw-ggg3-nxfksodv7fw3',
+        'categoryCode' => getenv('TOYYIBPAY_CATEGORY_CODE') ?: 'p1cd10dd',
+        'billName' => 'Salon Booking Payment',
+        'billDescription' => 'Payment for salon booking',
         'billPriceSetting' => 1,
         'billPayorInfo' => 1,
-        'billAmount' => $totalAmount * 100, // Convert to cents/sen
-        'billReturnUrl' => TOYYIBPAY_RETURN_URL . '?booking_id=' . $bookingIdsString,
-        'billCallbackUrl' => TOYYIBPAY_CALLBACK_URL,
-        'billExternalReferenceNo' => $bookingIdsString,
+        'billAmount' => (int) ($totalAmount * 100),
+        'billReturnUrl' => getenv('TOYYIBPAY_RETURN_URL') ?: 'https://complete-salon-saas-product-production.up.railway.app/payment-success',
+        'billCallbackUrl' => getenv('TOYYIBPAY_CALLBACK_URL') ?: 'https://complete-salon-saas-product-production.up.railway.app/api/toyyibpay/callback',
+        'billExternalReferenceNo' => (string) $bookingIdsString,
         'billTo' => $firstBooking['full_name'],
         'billEmail' => $firstBooking['email'],
         'billPhone' => $firstBooking['phone'] ?: '0000000000',
+        'billPaymentChannel' => 0
     ];
 
-    $response = sendToyyibPayRequest(TOYYIBPAY_BASE_URL . '/index.php/api/createBill', $toyyibData);
+    // Log the request for debugging
+    error_log('[ToyyibPay] Creating Bill Request: ' . json_encode($toyyibData));
 
-    if (isset($response[0]['BillCode'])) {
+    $baseUrl = getenv('TOYYIBPAY_BASE_URL') ?: 'https://dev.toyyibpay.com';
+
+    $response = sendToyyibPayRequest(
+        rtrim($baseUrl, '/') . '/index.php/api/createBill',
+        $toyyibData
+    );
+    // Log the full response
+    $logDir = dirname(__DIR__, 2) . '/logs';
+    if (!is_dir($logDir)) {
+        mkdir($logDir, 0755, true);
+    }
+
+    file_put_contents(
+        $logDir . '/toyyibpay.log',
+        date('Y-m-d H:i:s') . " RESPONSE: " . json_encode($response, JSON_PRETTY_PRINT) . PHP_EOL,
+        FILE_APPEND
+    );
+
+    if (isset($response[0]['BillCode']) && $response[0]['BillCode'] !== '') {
         $billCode = $response[0]['BillCode'];
 
         // Use the first ID for the transaction record, but full string is in external_ref
         $stmt = $db->prepare("INSERT INTO payment_transactions (booking_id, gateway, bill_code, amount, status) VALUES (?, 'toyyibpay', ?, ?, 'pending')");
         $stmt->execute([$bookingIds[0], $billCode, $totalAmount]);
 
-        $paymentUrl = (strpos(TOYYIBPAY_BASE_URL, 'dev') !== false ? 'https://dev.toyyibpay.com/' : 'https://toyyibpay.com/') . $billCode;
+        $baseUrl = getenv('TOYYIBPAY_BASE_URL') ?: 'https://dev.toyyibpay.com';
+        $paymentUrl = rtrim($baseUrl, '/') . '/' . $billCode;
 
         sendResponse([
-            'payment_url' => $paymentUrl,
-            'bill_code' => $billCode
+            'payment_url' => $paymentUrl
         ]);
     } else {
-        error_log('[ToyyibPay] Create Bill Error: ' . json_encode($response));
         sendResponse([
-            'error' => 'Failed to create ToyyibPay bill.',
-            'details' => $response,
-            'debug_payload' => $toyyibData // Helpful for catching missing keys
+            'error' => 'Failed to generate payment URL',
+            'toyyibpay_response' => $response
         ], 500);
     }
 }
@@ -151,6 +187,27 @@ if ($method === 'POST' && count($uriParts) === 2 && $uriParts[1] === 'callback')
         echo 'OK';
     }
     exit();
+}
+
+// GET /api/toyyibpay/status/{booking_id}
+if ($method === 'GET' && count($uriParts) === 3 && $uriParts[1] === 'status') {
+    $bookingId = $uriParts[2];
+
+    $stmt = $db->prepare("SELECT * FROM payment_transactions WHERE booking_id = ? ORDER BY created_at DESC LIMIT 1");
+    $stmt->execute([$bookingId]);
+    $transaction = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$transaction) {
+        sendResponse(['error' => 'No payment transaction found for this booking'], 404);
+    }
+
+    sendResponse([
+        'status' => $transaction['status'],
+        'booking_id' => $transaction['booking_id'],
+        'bill_code' => $transaction['bill_code'],
+        'gateway' => $transaction['gateway'],
+        'amount' => $transaction['amount']
+    ]);
 }
 
 sendResponse(['error' => 'ToyyibPay route not found'], 404);
