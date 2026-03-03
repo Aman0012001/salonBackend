@@ -15,7 +15,7 @@ try {
         LEFT JOIN profiles p ON o.user_id = p.user_id
         ORDER BY o.created_at DESC
     ");
-    // If getting here, it worked (but it failed before)
+    // If getting here, it worked (but it failed before this is for test perpose)
     $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
     echo "Success! \n";
 

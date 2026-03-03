@@ -47,7 +47,7 @@ if ($method === 'POST' && count($uriParts) === 2 && $uriParts[1] === 'create-bil
         $booking = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$booking) {
-            continue; // Skip if not found, or handle error
+            continue; // Skip if not found, or handle err
         }
 
         $totalAmount += (float) $booking['price_paid'];
